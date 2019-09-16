@@ -28,9 +28,26 @@
 #include "ns3/nstime.h"
 #include "ns3/tcp-option-sack.h"
 #include "ns3/packet.h"
+#include "ns3/data-rate.h"
+#include "ns3/tcp-socket-base.h"
 
 namespace ns3 {
 class Packet;
+class TcpSocketState;
+
+struct RateSample
+{
+  DataRate      m_deliveryRate;   //!< The delivery rate sample
+  uint32_t      m_isAppLimited;   //!< Indicates whether the rate sample is application-limited
+  Time          m_interval;       //!< The length of the sampling interval
+  uint32_t      m_delivered;      //!< The amount of data marked as delivered over the sampling interval
+  uint32_t      m_priorDelivered = 0; //!< The delivered count of the most recent packet delivered
+  Time          m_priorTime;      //!< The delivered time of the most recent packet delivered
+  Time          m_sendElapsed;    //!< Send time interval calculated from the most recent packet delivered
+  Time          m_ackElapsed;     //!< ACK time interval calculated from the most recent packet delivered
+  uint32_t      m_packetLoss;
+  uint32_t      m_priorInFlight;
+};
 
 /**
  * \ingroup tcp
@@ -61,6 +78,10 @@ public:
   bool m_retrans       {false};      //!< Indicates if the segment is retransmitted
   Time m_lastSent      {Time::Min()};//!< Timestamp of the time at which the segment has been sent last time
   bool m_sacked        {false};      //!< Indicates if the segment has been SACKed
+  uint64_t m_delivered {0};          //!< Connection's delivered data at the time the packet was sent
+  Time m_deliveredTime {Seconds (0)};//!< Connection's delivered time at the time the packet was sent
+  Time m_firstSentTime {Seconds (0)};//!< Connection's first sent time at the time the packet was sent
+  bool m_isAppLimited  {false};      //!< Connection's app limited at the time the packet was sent
 };
 
 /**
@@ -346,7 +367,7 @@ public:
    * \brief Set the entire sent list as lost (typically after an RTO)
    *
    * Used to set all the sent list as lost, so the bytes in flight is not counting
-   * them as in flight, but we will continue to use SACK information for
+   * them as in flight, but we will continue to use SACK informations for
    * recovering the timeout.
    *
    * Moreover, reset the retransmit flag for every item.
@@ -406,6 +427,36 @@ public:
    */
   void ResetRenoSack ();
 
+  /**
+   * \brief Returns ptr to RateSample class
+   */
+  struct RateSample * GetRateSample ();
+
+  /**
+   * \brief Set the TcpSocketState
+   */
+  void SetTcpSocketState (Ptr<TcpSocketState> tcb);
+
+  /**
+   * \brief Updates per packet variables required for rate sampling on each
+   * packet transmission
+   */
+  void UpdatePacketSent (SequenceNumber32 seq, uint32_t sz);
+
+  /**
+   * \brief Updates rate samples rate on arrival of each acknowledgement.
+   */
+  void UpdateRateSample (TcpTxItem *pps);
+
+  /**
+   * \brief Calculates delivery rate on arrival of each acknowledgement.
+   */
+  bool GenerateRateSample ();
+
+  /**
+   * \brief Checks if connection is app-limited upon each write from the application
+   */
+  void OnApplicationWrite ();
 private:
   friend std::ostream & operator<< (std::ostream & os, TcpTxBuffer const & tcpTxBuf);
 
@@ -475,6 +526,17 @@ private:
   /**
    * \brief Get a block of data previously transmitted
    *
+   * \see GetPacketFromList
+   *
+   * \param numBytes number of bytes to copy
+   * \param seq sequence requested
+   * \returns the item that contains the right packet
+   */
+  TcpTxItem* GetTransmittedSegment (uint32_t numBytes, const SequenceNumber32 &seq);
+
+  /**
+   * \brief Get a block of data previously transmitted and Mark it as retransmitted
+   *
    * This is clearly a retransmission, and if everything is going well,
    * the block requested is matching perfectly with another one requested
    * in the past. If not, fragmentation or merge are required. We manage
@@ -486,7 +548,7 @@ private:
    * \param seq sequence requested
    * \returns the item that contains the right packet
    */
-  TcpTxItem* GetTransmittedSegment (uint32_t numBytes, const SequenceNumber32 &seq);
+  TcpTxItem* MarkTransmittedSegment (uint32_t numBytes, const SequenceNumber32 &seq);
 
   /**
    * \brief Get a block (which is returned as Packet) from a list
@@ -616,6 +678,9 @@ private:
   uint32_t m_segmentSize {0}; //!< Segment size from TcpSocketBase
   bool     m_renoSack {false}; //!< Indicates if AddRenoSack was called
 
+  Ptr<TcpSocketState> m_tcb {nullptr};
+  struct RateSample   m_rs;
+
 };
 
 /**
@@ -634,6 +699,6 @@ std::ostream & operator<< (std::ostream & os, TcpTxBuffer const & tcpTxBuf);
  */
 std::ostream & operator<< (std::ostream & os, TcpTxItem const & item);
 
-} // namespace ns3
+} // namepsace ns3
 
 #endif /* TCP_TX_BUFFER_H */
